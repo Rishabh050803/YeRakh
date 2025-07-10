@@ -3,12 +3,8 @@ from fastapi import APIRouter, status, Depends, UploadFile, File, Form
 from typing import *
 from fastapi.responses import JSONResponse,FileResponse
 from fastapi.exceptions import HTTPException
-from src.StorageApp.files import files
-from src.StorageApp.schemas import FileSchema,FileUploadSchema
-from dotenv import load_dotenv
 import os
-import mimetypes
-from datetime import datetime
+import urllib.parse
 from .services import *
 from DB.main import get_session
 
@@ -90,3 +86,35 @@ async def delete_file(file_uuid: UUID, session: AsyncSession = Depends(get_sessi
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
     return {"message": "File deleted successfully"}
+
+
+@storage_router.get("/explore_folder/{folder_path:path}", status_code=status.HTTP_200_OK)
+async def explore_folder(folder_path: str, session: AsyncSession = Depends(get_session)):
+    """
+    Explore a virtual folder and list its files and subfolders.
+    """
+    # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
+    print("folder_path", folder_path)
+    folder_path = urllib.parse.unquote(folder_path).rstrip("/")
+
+    items = await service.explore_folder(folder_path, session)
+
+    if not items:
+        raise HTTPException(status_code=404, detail="Folder not found or empty")
+
+    return JSONResponse(content=items, status_code=200)
+
+@storage_router.delete("/delete_folder/{folder_path:path}", status_code=status.HTTP_200_OK)
+async def delete_folder(folder_path: str, session: AsyncSession = Depends(get_session)):
+    """
+    Delete a virtual folder and all its contents.
+    """
+    # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
+    folder_path = urllib.parse.unquote(folder_path).rstrip("/")
+
+    deleted_count = await service.delete_folder(folder_path, session)
+
+    if deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Folder not found or empty")
+
+    return {"message": f"Deleted {deleted_count} items from folder '{folder_path}'"}

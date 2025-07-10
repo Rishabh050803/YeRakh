@@ -6,7 +6,7 @@ from datetime import datetime
 from uuid import UUID, uuid4
 from fastapi import UploadFile, HTTPException
 from fastapi.responses import FileResponse
-
+import os
 
 class StorageService:
     async def list_files(self, session: AsyncSession):
@@ -41,6 +41,7 @@ class StorageService:
         """
         # Check if file with same name exists in the same folder
         # First check if a file with the same name exists in the database
+        print("folder_path for file upload ", folder_path)
         statement = select(FileModel).where(
             (FileModel.name == file.filename) & 
             (FileModel.folder_path == folder_path)
@@ -91,3 +92,63 @@ class StorageService:
         await session.commit()
 
         return file
+
+
+    async def explore_folder(self, folder_path: str, session: AsyncSession):
+        # print("folder_path", folder_path)
+        folder_path = folder_path.rstrip("/")
+        stmt = select(FileModel).where(FileModel.folder_path.startswith(folder_path))
+
+        result = await session.execute(stmt)
+        all_items = result.scalars().all()
+        # print("result of the query",all_items)
+
+        files = []
+        folders = set()
+
+        for item in all_items:
+            item_folder = item.folder_path.rstrip("/")
+
+            if item_folder == folder_path:
+                # This file is in the current folder
+                files.append({
+                    "type": "file",
+                    "name": item.name,
+                    "path": os.path.join(item.folder_path, item.name)
+                })
+            else:
+                # This file is deeper, identify its immediate subfolder
+                rel_path = item_folder[len(folder_path):].lstrip("/")  # Remove current path
+                parts = rel_path.split("/")
+                if parts and parts[0]:
+                    folders.add(parts[0])
+
+        folder_list = [{
+            "type": "folder",
+            "name": folder,
+            "path": os.path.join(folder_path, folder)
+        } for folder in sorted(folders)]
+
+        files = sorted(files, key=lambda x: x['name'].lower())
+        return folder_list + files
+
+
+    async def delete_folder(self, folder_path: str, session: AsyncSession):
+        """
+        Delete all files in a folder and the folder itself.
+        """
+        # Get all files in the folder
+        stmt = select(FileModel).where(FileModel.folder_path == folder_path)
+        result = await session.execute(stmt)
+        files = result.scalars().all()
+
+        if not files:
+            raise HTTPException(status_code=404, detail="Folder not found or empty")
+
+        # Delete each file
+        for file in files:
+            DiskManager.delete_file(file.name)
+            await session.delete(file)
+
+        await session.commit()
+        return {"message": "Folder and its contents deleted successfully"}

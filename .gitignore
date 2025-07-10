@@ -3,6 +3,7 @@
 __pycache__/
 *.pyc
 *.pyo
-storage/
+files/
 *.db
 *.sqlite3
+docker-compose.yml

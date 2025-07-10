@@ -1,5 +1,5 @@
 from fastapi import APIRouter,status,Depends
-from fastapi import UploadFile, File
+from fastapi import APIRouter, status, Depends, UploadFile, File, Form
 from typing import *
 from fastapi.responses import JSONResponse,FileResponse
 from fastapi.exceptions import HTTPException
@@ -48,44 +48,34 @@ async def list_files(session: AsyncSession = Depends(get_session)):
     return JSONResponse(content=response_data, status_code=status.HTTP_200_OK)
 
 
-@storage_router.get("/get_file/{file_uuid}",status_code=status.HTTP_200_OK)
+@storage_router.get("/get_file/{file_uuid}", status_code=status.HTTP_200_OK)
 async def get_file(file_uuid: UUID, session: AsyncSession = Depends(get_session)):
-    file = await service.get_file( file_uuid,session )
-    if file is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found")
-    return FileResponse(
-        os.path.join(STORAGE_DIR, file.name),
-        media_type=mimetypes.guess_type(file.name)[0] or 'application/octet-stream',
-        filename=file.name
-    )
+    """
+    Endpoint to retrieve a specific file by UUID.
+    """
+    response = await service.get_file_response(file_uuid, session)
+    if response is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return response
+
 
 @storage_router.post("/upload_file", status_code=status.HTTP_201_CREATED)
-async def upload_file(file: UploadFile = File(...), session: AsyncSession = Depends(get_session)):
+async def upload_file(
+    file: UploadFile = File(...),
+    folder_path: str = Form(""),  # Default to root folder if not provided
+    session: AsyncSession = Depends(get_session)
+):
     """
-    Upload a file to the storage.
+    Upload a file to the storage with an optional folder path.
+    The folder path is virtual and used for organization only.
     """
     if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="File name is required")
-    
-    # Create directory if it doesn't exist
-    os.makedirs(STORAGE_DIR, exist_ok=True)
-    
-    file_content = await file.read()
-    file_upload = FileUploadSchema(
-        name=file.filename,
-        parent_path="",
-        file=file_content
-    )
-    
-    new_file = await service.upload_file(file_upload, session)
-    
-    # Save the file to the storage directory
-    file_path = os.path.join(STORAGE_DIR, new_file.name)
-    with open(file_path, 'wb') as f:
-        f.write(file_content)
+        raise HTTPException(status_code=400, detail="Filename is required")
 
-    # Convert UUID to string for JSON serialization
-    response_data = {
+    # Move all logic to the service
+    new_file = await service.upload_file(file, folder_path, session)
+
+    return {
         "uuid": str(new_file.uuid),
         "name": new_file.name,
         "folder_path": new_file.folder_path,
@@ -93,4 +83,10 @@ async def upload_file(file: UploadFile = File(...), session: AsyncSession = Depe
         "created_at": new_file.created_at.isoformat()
     }
 
-    return JSONResponse(content=response_data, status_code=status.HTTP_201_CREATED)
+
+@storage_router.delete("/delete_file/{file_uuid}", status_code=status.HTTP_200_OK)
+async def delete_file(file_uuid: UUID, session: AsyncSession = Depends(get_session)):
+    file = await service.delete_file(file_uuid, session)
+    if file is None:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"message": "File deleted successfully"}

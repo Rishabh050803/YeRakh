@@ -1,0 +1,91 @@
+from passlib.context import CryptContext
+from datetime import timedelta,datetime
+from src.config import Config
+import  jwt
+import uuid
+import logging
+
+
+poassword_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+ACCESS_TOKEN_EXPIRE_MINUTES = Config.ACCESS_TOKEN_EXPIRE_MINUTES
+
+def generate_password_hash(password: str) -> str:
+    """Generate a hashed password."""
+    return poassword_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Verify a plain password against a hashed password."""
+    return poassword_context.verify(plain_password, hashed_password)
+
+
+def create_access_token(user_data:dict,expiry : timedelta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),refresh:bool = False) -> str:
+    """Create a JWT access token."""
+    payload = {}
+    payload['user'] = user_data
+    payload['exp'] = datetime.now() + expiry
+    payload['jti'] = str(uuid.uuid4())
+    token = jwt.encode(
+        payload = payload,
+        key = Config.JWT_SECRET,
+        algorithm = Config.JWT_ALGORITHM
+    )
+
+    return token
+
+
+def decode_access_token(token: str) -> dict:
+    """Decode a JWT access token."""
+    try:
+        payload = jwt.decode(
+            jwt = token,
+            key = Config.JWT_SECRET,
+            algorithms = [Config.JWT_ALGORITHM]
+        )
+        return payload
+    except jwt.ExpiredSignatureError:
+        logging.error("Token has expired")
+        return {}
+    except jwt.InvalidTokenError:
+        logging.error("Invalid token")
+        return {}
+    except Exception as e:
+        logging.error(f"An error occurred while decoding the token: {e}")
+        return {}
+    
+
+
+def create_verification_token(user_id: uuid.UUID) -> str:
+    """
+    Generate a verification token which is sent to email with a link
+    """
+    payload = {
+        "sub": str(user_id),
+        "type": "email_verification",
+        "exp": datetime.now() + timedelta(hours=24)
+    }
+    token = jwt.encode(
+        payload=payload,
+        key=Config.JWT_SECRET,
+        algorithm=Config.JWT_ALGORITHM
+    )
+    return token
+
+def verify_token(token: str) -> dict:
+    """Verify a token (verification or password reset)"""
+    try:
+        payload = jwt.decode(
+            jwt=token,
+            key=Config.JWT_SECRET,
+            algorithms=[Config.JWT_ALGORITHM]
+        )
+        return payload
+    except jwt.ExpiredSignatureError:
+        logging.error("Token has expired")
+        return {}
+    except jwt.InvalidTokenError:
+        logging.error("Invalid token")
+        return {}
+    except Exception as e:
+        logging.error(f"An error occurred while verifying the token: {e}")
+        return {}

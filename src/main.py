@@ -1,4 +1,5 @@
 from src.StorageApp.routes import storage_router
+from src.Auth.routes import auth_router
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,3 +26,4 @@ async def health_check():
     return JSONResponse(content={"status": "ok"}, status_code=status.HTTP_200_OK)   
 
 app.include_router(storage_router, prefix="/storage", tags=["Storage"])
+app.include_router(auth_router, prefix="/auth", tags=["Authentication"])

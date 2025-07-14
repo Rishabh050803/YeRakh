@@ -4,7 +4,8 @@ from src.config import Config
 import  jwt
 import uuid
 import logging
-
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 poassword_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -88,4 +89,29 @@ def verify_token(token: str) -> dict:
         return {}
     except Exception as e:
         logging.error(f"An error occurred while verifying the token: {e}")
+        return {}
+
+async def verify_google_token(token: str) -> dict:
+    """
+    Verify a Google ID token and return user information
+    """
+    try:
+        # Specify the CLIENT_ID of your app
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), Config.GOOGLE_CLIENT_ID)
+        
+        # Verify the issuer
+        if idinfo['iss'] not in ['accounts.google.com', 'https://accounts.google.com']:
+            raise ValueError('Wrong issuer.')
+            
+        # ID token is valid
+        return {
+            "email": idinfo['email'],
+            "first_name": idinfo.get('given_name', ''),
+            "last_name": idinfo.get('family_name', ''),
+            "provider_id": idinfo['sub'],  # Google user ID
+            "picture": idinfo.get('picture', '')
+        }
+    except ValueError as e:
+        # Invalid token
+        logging.error(f"Invalid Google token: {e}")
         return {}

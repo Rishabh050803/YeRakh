@@ -9,6 +9,9 @@ from datetime import datetime, timedelta
 import uuid
 import logging
 from typing import Optional
+from .email import EmailSender
+
+
 
 class UserService:
     async def get_user_by_email(self, email: str, session: AsyncSession):
@@ -31,6 +34,10 @@ class UserService:
         # Remove password from dict
         password = user_data_dict.pop('password')
         
+        # Convert provider_id to string if present
+        if 'provider_id' in user_data_dict and user_data_dict['provider_id'] is not None:
+            user_data_dict['provider_id'] = str(user_data_dict['provider_id'])
+        
         new_user = User(**user_data_dict)
         new_user.password_hash = generate_password_hash(password)
         
@@ -45,15 +52,41 @@ class UserService:
     
     async def create_user_by_Oauth(self, user_data: UserCreateModel_By_OAuth, session: AsyncSession):
         if await self.user_exists(user_data.email, session):
-            # For OAuth, check if user exists but has a different auth provider
+            # Get the existing user
             existing_user = await self.get_user_by_email(user_data.email, session)
-            if existing_user.auth_provider != user_data.auth_provider:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Email already in use with {existing_user.auth_provider} authentication"
-                )
-            return existing_user
+            
+            # If the user already authenticated with this provider, just return the user
+            if existing_user.auth_provider == user_data.auth_provider:
+                return existing_user
+                
+            # User exists but with different auth provider (likely email+password)
+            # Link the accounts instead of rejecting
+            if existing_user.auth_provider == "password" and user_data.auth_provider == "google":
+                # Store the Google provider ID while keeping password auth
+                existing_user.provider_id = user_data.provider_id
+                
+                # We'll keep auth_provider as "password" but add a field to track linked accounts
+                # If you don't have this field, you can add it or use a separate table
+                # For now, we'll just store the provider ID
+                
+                # Make sure the user is verified (since OAuth providers verify emails)
+                existing_user.is_verified = True
+                existing_user.updated_at = datetime.now()
+                
+                session.add(existing_user)
+                await session.commit()
+                await session.refresh(existing_user)
+                
+                return existing_user
+                
+            # If another OAuth provider, you could handle that case too
+            # or keep the current behavior
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Email already in use with {existing_user.auth_provider} authentication"
+            )
         
+        # Create new user with OAuth as before
         user = User(
             email=user_data.email,
             first_name=user_data.first_name,
@@ -161,14 +194,22 @@ class UserService:
             }
         }
     
-    async def create_refresh_token(self, user_id: uuid.UUID, session: AsyncSession) -> RefreshToken:
+    async def create_refresh_token(self, user_id: uuid.UUID, session: AsyncSession, 
+                                   previous_token_id: Optional[uuid.UUID] = None,
+                                   family_id: Optional[uuid.UUID] = None) -> RefreshToken:
         """Create a refresh token for a user"""
         token_str = str(uuid.uuid4())
         expires_at = datetime.now() + timedelta(days=30)
         
+        # If no family ID provided, create a new one
+        if not family_id:
+            family_id = uuid.uuid4()
+        
         refresh_token = RefreshToken(
             user_id=user_id,
             token=token_str,
+            family_id=family_id,
+            previous_token_id=previous_token_id,
             expires_at=expires_at
         )
         
@@ -179,12 +220,10 @@ class UserService:
         return refresh_token
     
     async def refresh_token(self, refresh_token: str, session: AsyncSession):
-        """Generate a new access token using a refresh token"""
-        # Find the token
+        """Generate a new access token using a refresh token and rotate the refresh token"""
+        # First, find the token by its value only
         statement = select(RefreshToken).where(
-            RefreshToken.token == refresh_token,
-            RefreshToken.is_revoked == False,
-            RefreshToken.expires_at > datetime.now()
+            RefreshToken.token == refresh_token
         )
         result = await session.execute(statement)
         token = result.scalar_one_or_none()
@@ -192,9 +231,33 @@ class UserService:
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, 
-                detail="Invalid or expired refresh token"
+                detail="Invalid refresh token"
             )
         
+        # Now check if it's revoked or expired - THIS IS THE TOKEN REUSE DETECTION
+        if token.is_revoked or token.expires_at <= datetime.now():
+            # TOKEN REUSE DETECTED! Take aggressive security measures
+            
+            # 1. Revoke all tokens in the same family (nuclear option)
+            await self.revoke_token_family(token.family_id, session)
+            
+            # 2. Log the security event
+            logging.warning(f"Refresh token reuse detected! User ID: {token.user_id}, Token ID: {token.id}")
+            
+            # 3. Alert the user
+            statement = select(User).where(User.uid == token.user_id)
+            result = await session.execute(statement)
+            user = result.scalar_one_or_none()
+            if user:
+                await EmailSender.alert_user_about_token_reuse(user, token.user_id, session)
+            
+            # 4. Return a clear security message
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Security alert: Your session has been terminated due to suspicious activity. Please log in again."
+            )
+        
+        # If we get here, the token is valid and not revoked - continue with normal flow
         # Get the user
         statement = select(User).where(User.uid == token.user_id)
         result = await session.execute(statement)
@@ -203,11 +266,30 @@ class UserService:
         if not user:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
         
+        # Get the family ID from the current token
+        family_id = token.family_id
+
+        # Invalidate the current refresh token (rotation)
+        token.is_revoked = True
+        session.add(token)
+        
+        # Generate new refresh token in the same family
+        new_refresh_token = await self.create_refresh_token(
+            user_id=user.uid, 
+            session=session,
+            previous_token_id=token.id,
+            family_id=family_id
+        )
+        
         # Generate new access token
         access_token = create_access_token({"sub": str(user.uid), "email": user.email})
         
+        # Commit changes
+        await session.commit()
+        
         return {
             "access_token": access_token,
+            "refresh_token": new_refresh_token.token,
             "token_type": "bearer"
         }
     
@@ -223,5 +305,23 @@ class UserService:
             await session.commit()
         
         return {"message": "Successfully logged out"}
+    
+    async def revoke_token_family(self, family_id: uuid.UUID, session: AsyncSession):
+        """Revoke all tokens in a family (nuclear option)"""
+        statement = select(RefreshToken).where(
+            RefreshToken.family_id == family_id,
+            RefreshToken.is_revoked == False
+        )
+        result = await session.execute(statement)
+        tokens = result.scalars().all()
+        
+        for token in tokens:
+            token.is_revoked = True
+            session.add(token)
+        
+        await session.commit()
+        return len(tokens)
+
+
 
 

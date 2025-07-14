@@ -27,6 +27,11 @@ class RefreshRequest(BaseModel):
 class GoogleAuthRequest(BaseModel):
     id_token: str
 
+class TokenRefreshResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str
+
 @auth_router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
     user_data: UserCreateModel_By_Password,
@@ -64,16 +69,14 @@ async def login_with_google(
     session: AsyncSession = Depends(get_session)
 ):
     """Login with Google OAuth"""
-    # In a real implementation, you would verify the Google ID token
-    # and extract user information
+    # Verify the Google ID token
+    user_info = await verify_google_token(request.id_token)
     
-    # Mock implementation for example
-    user_info = {
-        "email": "user@example.com",
-        "first_name": "John",
-        "last_name": "Doe",
-        "provider_id": "123456789"
-    }
+    if not user_info:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Google authentication token"
+        )
     
     # Create or get user
     oauth_user = UserCreateModel_By_OAuth(
@@ -90,6 +93,11 @@ async def login_with_google(
     access_token = create_access_token({"sub": str(user.uid), "email": user.email})
     refresh_token = await user_service.create_refresh_token(user.uid, session)
     
+    # Update last login time
+    user.last_login = datetime.now()
+    session.add(user)
+    await session.commit()
+    
     return {
         "access_token": access_token,
         "refresh_token": refresh_token.token,
@@ -97,16 +105,18 @@ async def login_with_google(
         "user": {
             "email": user.email,
             "first_name": user.first_name,
-            "last_name": user.last_name
+            "last_name": user.last_name,
+            "uid": str(user.uid),
+            "is_verified": user.is_verified
         }
     }
 
-@auth_router.post("/refresh")
+@auth_router.post("/refresh", response_model=TokenRefreshResponse)
 async def refresh_token(
     request: RefreshRequest,
     session: AsyncSession = Depends(get_session)
 ):
-    """Refresh an access token"""
+    """Refresh an access token and get a new refresh token (token rotation)"""
     return await user_service.refresh_token(request.refresh_token, session)
 
 @auth_router.post("/logout")

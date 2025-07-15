@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings,SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -7,9 +7,22 @@ print("🧐 CWD when loading .env:", os.getcwd())
 print("🧐 Do we see a .env here?", os.path.exists(os.path.join(os.getcwd(), ".env")))
 
 class Settings(BaseSettings):
-    DATABASE_URL : str
-    JWT_SECRET: str = "dev-secret-key"  # Default for development only
-    JWT_ALGORITHM: str = "HS256"        # Default algorithm
+    JWT_SECRET : str
+    JWT_ALGORITHM : str
+    STORAGE_DIR : str
+    DATABASE_URL  : str
+    GOOGLE_CLIENT_SECRET : str
+    GOOGLE_CLIENT_ID : str
+    SMTP_USERNAME : str
+    SMTP_PASSWORD : str
+    EMAIL_FROM : str
+    SMTP_PORT : int
+    SMTP_SERVER : str
+
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10  # Default token expiration time in minutes
+    # Application URL for email links
+    APP_URL: str = "http://127.0.0.1:8000/auth"
+
     model_config  = SettingsConfigDict(
          env_file = ".env",
          extra = "ignore"

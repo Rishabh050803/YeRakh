@@ -12,14 +12,8 @@ class EmailSender:
     @staticmethod
     async def send_verification_email(email: str, token: str):
         """Send verification email to user"""
-        print("Config.APP_URL:", Config.APP_URL)
-        print("Config.SMTP_SERVER:", Config.SMTP_SERVER)
-        print("Config.SMTP_PORT:", Config.SMTP_PORT)
-        print("Config.SMTP_USERNAME:", Config.SMTP_USERNAME)
-        print("Config.SMTP_PASSWORD:", Config.SMTP_PASSWORD)
-        print("Config.EMAIL_FROM:", Config.EMAIL_FROM)
+     
         try:
-            print(f"Attempting to send verification email to {email}")
             # Create verification URL
             verification_url = f"{Config.APP_URL}/verify-email?token={token}"
             
@@ -44,16 +38,13 @@ class EmailSender:
             message.attach(MIMEText(body, "html"))
             
             # Send email
-            print(f"Connecting to SMTP server {Config.SMTP_SERVER}:{Config.SMTP_PORT}")
             with smtplib.SMTP(Config.SMTP_SERVER, Config.SMTP_PORT) as server:
                 server.starttls()
                 server.login(Config.SMTP_USERNAME, Config.SMTP_PASSWORD)
                 server.send_message(message)
                 
-            print(f"Verification email successfully sent to {email}")
             return True
         except Exception as e:
-            print(f"Failed to send verification email: {e}")
             return False
         
 

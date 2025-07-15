@@ -26,7 +26,7 @@ class User(SQLModel,table=True):
     last_login : datetime = Field(sa_column= Column(pg.TIMESTAMP,default = datetime.now))
 
     def __repr__(self):
-        return f"<User {self.username}> , first name - {self.first_name}, last name - {self.last_name}"
+        return f"<User {self.email}> , first name - {self.first_name}, last name - {self.last_name}"
 
 class VerificationToken(SQLModel, table=True):
     __tablename__ = "verification_tokens"

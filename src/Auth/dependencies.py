@@ -14,14 +14,26 @@ async def get_current_user(
     session: AsyncSession = Depends(get_session)
 ) -> User:
     """Get the current authenticated user"""
-    payload = decode_access_token(token)
-    if not payload:
+    result = decode_access_token(token)
+    
+    # Check token status
+    if result["status"] == "expired":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired. Please log in again.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    elif result["status"] != "valid":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    # If valid, get the payload
+    payload = result["payload"]
+    
+    # Extract user ID directly from standardized payload
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(

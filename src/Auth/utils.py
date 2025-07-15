@@ -20,12 +20,20 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return poassword_context.verify(plain_password, hashed_password)
 
 
-def create_access_token(user_data:dict,expiry : timedelta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),refresh:bool = False) -> str:
+def create_access_token(user_data:dict, expiry: timedelta = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES), refresh:bool = False) -> str:
     """Create a JWT access token."""
-    payload = {}
-    payload['user'] = user_data
-    payload['exp'] = datetime.now() + expiry
-    payload['jti'] = str(uuid.uuid4())
+    # Convert to Unix timestamp for JWT standard
+    expiration_time = datetime.now() + expiry
+    expiration_timestamp = int(expiration_time.timestamp())
+    
+    payload = {
+        "sub": user_data.get("sub", ""),
+        "email": user_data.get("email", ""),
+        "exp": expiration_timestamp,  # Using standard Unix timestamp
+        "jti": str(uuid.uuid4())
+    }
+    
+    print(f"Creating access token that expires at: {expiration_time}")
     token = jwt.encode(
         payload = payload,
         key = Config.JWT_SECRET,
@@ -43,16 +51,17 @@ def decode_access_token(token: str) -> dict:
             key = Config.JWT_SECRET,
             algorithms = [Config.JWT_ALGORITHM]
         )
-        return payload
+        print("paylod ---->  ",payload)
+        return {"status": "valid", "payload": payload}
     except jwt.ExpiredSignatureError:
-        logging.error("Token has expired")
-        return {}
+        print("Token has expired")
+        return {"status": "expired", "payload": {}}
     except jwt.InvalidTokenError:
-        logging.error("Invalid token")
-        return {}
+        print("Invalid token")
+        return {"status": "invalid", "payload": {}}
     except Exception as e:
-        logging.error(f"An error occurred while decoding the token: {e}")
-        return {}
+        print(f"An error occurred while decoding the token: {e}")
+        return {"status": "error", "payload": {}}
     
 
 

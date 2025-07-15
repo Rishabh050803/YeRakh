@@ -28,10 +28,10 @@ class UserResponse(BaseModel):
 class UserCreateModel_By_Password(BaseModel):
     email: str = Field(max_length=100)
     first_name: str = Field(max_length=50)
-    last_name: str = Field( max_length=50)
+    last_name: str = Field(max_length=50)
     password: str = Field(min_length=8, max_length=128)
-    auth_provider: str = Field(default="password")  # e.g., "password", "google", "github"
-    provider_id: str = Field(default=123)  # Unique identifier for the user
+    auth_provider: str = Field(default="password")
+    provider_id: Optional[str] = Field(default=None)  # Changed from int to Optional[str]
     is_verified: bool = Field(default=False)
     is_active: bool = Field(default=True)
     created_at: datetime = Field(default_factory=datetime.now)

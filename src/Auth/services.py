@@ -136,6 +136,10 @@ class UserService:
         if not user_id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid token payload")
         
+        # Check token expiration
+        if "exp" in payload and datetime.fromtimestamp(payload["exp"]) < datetime.now():
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification token has expired")
+        
         # Find the user
         statement = select(User).where(User.uid == user_id)
         result = await session.execute(statement)
@@ -148,6 +152,13 @@ class UserService:
         user.is_verified = True
         user.updated_at = datetime.now()
         
+        # Find and delete all verification tokens for this user
+        delete_statement = select(VerificationToken).where(VerificationToken.user_id == user_id)
+        result = await session.execute(delete_statement)
+        tokens = result.scalars().all()
+        for token_obj in tokens:
+            await session.delete(token_obj)
+    
         session.add(user)
         await session.commit()
         await session.refresh(user)
@@ -180,7 +191,10 @@ class UserService:
         await session.commit()
         
         # Generate tokens
-        access_token = create_access_token({"sub": str(user.uid), "email": user.email})
+        access_token = create_access_token({
+            "sub": str(user.uid),
+            "email": user.email
+        })
         refresh_token = await self.create_refresh_token(user.uid, session)
         
         return {

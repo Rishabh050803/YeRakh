@@ -1,15 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel.ext.asyncio.session import AsyncSession
-from typing import Optional
 from .services import UserService
 from .schemas import UserCreateModel_By_Password, UserCreateModel_By_OAuth
 from DB.main import get_session
 from pydantic import BaseModel, EmailStr
 from .utils import *
-import json
 from datetime import datetime
-from .models import VerificationToken, RefreshToken
+from .models import VerificationToken
 from sqlmodel import select
 
 auth_router = APIRouter()

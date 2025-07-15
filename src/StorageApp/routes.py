@@ -22,7 +22,27 @@ async def list_files(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """List all files in the storage for the current user."""
+    """
+    List all files in the storage for the authenticated user.
+    
+    This endpoint retrieves all files owned by the current user, regardless of folder structure.
+    Files are sorted by creation date (newest first).
+    
+    Authorization:
+        Requires a valid JWT access token.
+    
+    Returns:
+        JSONResponse: A 200 OK response with an array of file objects containing:
+            - uuid: Unique identifier for the file
+            - name: Original filename
+            - folder_path: Virtual folder path where the file is stored
+            - size: File size in bytes
+            - created_at: ISO-formatted creation timestamp
+    
+    Example:
+        GET /storage/list_files
+    """
+     
     files = await service.list_files(current_user.uid, session)
     
     # Convert each file to a dictionary with serializable values
@@ -46,7 +66,33 @@ async def get_file(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Endpoint to retrieve a specific file by UUID."""
+    """
+    Retrieve a specific file by its UUID.
+    
+    This endpoint allows downloading or previewing a file from the user's storage.
+    
+    Path Parameters:
+        file_uuid (UUID): The unique identifier of the file to retrieve.
+    
+    Query Parameters:
+        preview (bool, optional): If True, attempts to display the file in the browser.
+                                  If False, forces download. Default is False.
+    
+    Authorization:
+        Requires a valid JWT access token.
+        User can only access their own files.
+    
+    Returns:
+        FileResponse: The file with appropriate content-type and disposition headers.
+    
+    Raises:
+        HTTPException (404): If the file doesn't exist or doesn't belong to the user.
+    
+    Example:
+        GET /storage/get_file/3d8fbb26-73d3-4898-93cf-385f4ec59210
+        GET /storage/get_file/3d8fbb26-73d3-4898-93cf-385f4ec59210?preview=true
+    """
+
     response = await service.get_file_response(file_uuid, current_user.uid, session, preview)
     if response is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -59,7 +105,41 @@ async def upload_file(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Upload a file to the storage with an optional folder path."""
+    """
+    Upload a file to the user's storage with an optional folder path.
+    
+    This endpoint handles file uploads, storage quota validation, and metadata recording.
+    
+    Form Data:
+        file (UploadFile): The file to upload.
+        folder_path (str, optional): Virtual folder path to store the file. 
+                                     Defaults to root folder ("").
+    
+    Authorization:
+        Requires a valid JWT access token.
+    
+    Returns:
+        JSON: A 201 Created response with details of the uploaded file:
+            - uuid: Unique identifier for the file
+            - name: Original filename
+            - folder_path: Virtual folder path where the file is stored
+            - size: File size in bytes
+            - created_at: ISO-formatted creation timestamp
+            - storage_usage: Object containing storage metrics:
+                - used_mb: Current storage usage in MB
+                - total_mb: Total storage quota in MB
+                - percentage: Percentage of quota used
+    
+    Raises:
+        HTTPException (400): If the filename is missing
+        HTTPException (413): If the upload would exceed the user's storage quota
+        HTTPException (409): If a file with the same name already exists in that folder
+    
+    Example:
+        POST /storage/upload_file
+        (with multipart form data containing file and optional folder_path)
+    """
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -93,6 +173,33 @@ async def delete_file(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
+    """
+    Delete a specific file by its UUID.
+    
+    This endpoint removes a file from both storage and database records.
+    
+    Path Parameters:
+        file_uuid (UUID): The unique identifier of the file to delete.
+    
+    Authorization:
+        Requires a valid JWT access token.
+        User can only delete their own files.
+    
+    Returns:
+        JSON: A 200 OK response with a success message and updated storage usage:
+            - message: Confirmation message
+            - storage_usage: Object containing storage metrics:
+                - used_mb: Current storage usage in MB
+                - total_mb: Total storage quota in MB
+                - percentage: Percentage of quota used
+    
+    Raises:
+        HTTPException (404): If the file doesn't exist or doesn't belong to the user.
+    
+    Example:
+        DELETE /storage/delete_file/3d8fbb26-73d3-4898-93cf-385f4ec59210
+    """
+
     file = await service.delete_file(file_uuid, current_user.uid, session)
     if file is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -116,7 +223,43 @@ async def explore_folder(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Explore a virtual folder and list its files and subfolders."""
+    """
+    Explore a virtual folder and list its files and subfolders.
+    
+    This endpoint provides a hierarchical view of the user's storage structure.
+    When exploring the root folder (empty path), it shows all top-level folders and files.
+    
+    Path Parameters:
+        folder_path (str): URL-encoded path of the folder to explore.
+                           Use empty string for root folder.
+    
+    Authorization:
+        Requires a valid JWT access token.
+    
+    Returns:
+        JSONResponse: A 200 OK response with an array of items:
+            - For folders:
+                - type: "folder"
+                - name: Folder name
+                - path: Full path to the folder
+            - For files:
+                - type: "file"
+                - name: Filename
+                - path: Full path to the file
+                - uuid: Unique identifier for the file
+                - size: File size in bytes
+                - created_at: ISO-formatted creation timestamp
+            
+            Returns an empty array if the folder exists but has no contents.
+    
+    Raises:
+        HTTPException (404): If the folder doesn't exist. May include suggestions for similar folders.
+    
+    Example:
+        GET /storage/explore_folder/
+        GET /storage/explore_folder/images
+        GET /storage/explore_folder/documents/reports
+    """
     # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
     folder_path = urllib.parse.unquote(folder_path).rstrip("/")
 
@@ -134,7 +277,35 @@ async def delete_folder(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Delete a virtual folder and all its contents."""
+    """
+    Delete a virtual folder and all its contents recursively.
+    
+    This endpoint removes all files within a folder and its subfolders.
+    It deletes both the database records and the physical files.
+    
+    Path Parameters:
+        folder_path (str): URL-encoded path of the folder to delete.
+    
+    Authorization:
+        Requires a valid JWT access token.
+        User can only delete their own folders.
+    
+    Returns:
+        JSON: A 200 OK response with a success message and updated storage usage:
+            - message: Confirmation message with details on deleted items
+            - storage_usage: Object containing storage metrics:
+                - used_mb: Current storage usage in MB
+                - total_mb: Total storage quota in MB
+                - percentage: Percentage of quota used
+    
+    Raises:
+        HTTPException (404): If the folder doesn't exist or is empty.
+        HTTPException (500): If there's an error during the deletion process.
+    
+    Example:
+        DELETE /storage/delete_folder/images
+        DELETE /storage/delete_folder/documents/reports
+    """
     # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
     folder_path = urllib.parse.unquote(folder_path).rstrip("/")
 
@@ -158,7 +329,24 @@ async def get_storage_usage(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """Get the current storage usage for the user."""
+    """
+    Get the current storage usage statistics for the authenticated user.
+    
+    This endpoint provides a summary of the user's storage quota and usage.
+    
+    Authorization:
+        Requires a valid JWT access token.
+    
+    Returns:
+        JSON: A 200 OK response with storage metrics:
+            - storage_usage:
+                - used_mb: Current storage usage in MB
+                - total_mb: Total storage quota in MB (400MB)
+                - percentage: Percentage of quota used
+    
+    Example:
+        GET /storage/storage_usage
+    """
     current_usage = await service.get_user_storage_usage(current_user.uid, session)
     current_usage_mb = current_usage / (1024 * 1024)
     

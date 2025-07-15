@@ -33,7 +33,6 @@ def create_access_token(user_data:dict, expiry: timedelta = timedelta(minutes=AC
         "jti": str(uuid.uuid4())
     }
     
-    print(f"Creating access token that expires at: {expiration_time}")
     token = jwt.encode(
         payload = payload,
         key = Config.JWT_SECRET,
@@ -51,16 +50,12 @@ def decode_access_token(token: str) -> dict:
             key = Config.JWT_SECRET,
             algorithms = [Config.JWT_ALGORITHM]
         )
-        print("paylod ---->  ",payload)
         return {"status": "valid", "payload": payload}
     except jwt.ExpiredSignatureError:
-        print("Token has expired")
         return {"status": "expired", "payload": {}}
     except jwt.InvalidTokenError:
-        print("Invalid token")
         return {"status": "invalid", "payload": {}}
     except Exception as e:
-        print(f"An error occurred while decoding the token: {e}")
         return {"status": "error", "payload": {}}
     
 

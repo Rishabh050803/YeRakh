@@ -32,11 +32,8 @@ class StorageService:
             statement = select(FileModel).where(FileModel.user_id == user_id).order_by(desc(FileModel.created_at))
             result = await session.execute(statement)
             files = result.scalars().all()
-            print(f"Retrieved {len(files)} files for user {user_id}")
-            # Do not rollback here - it undoes the file record retrieval
             return files
         except Exception as e:
-            print(f"Error listing files: {str(e)}")
             return []
 
     async def get_file(self, file_uuid: UUID, user_id: UUID, session: AsyncSession):
@@ -142,7 +139,6 @@ class StorageService:
             await session.rollback()
             if os.path.exists(temp_file.name):
                 os.unlink(temp_file.name)
-            print(f"Error uploading file: {str(e)}")
             raise HTTPException(status_code=500, detail=f"File upload failed: {str(e)}")
 
     def _sanitize_filename(self, filename: str) -> str:
@@ -172,7 +168,6 @@ class StorageService:
         
         # Special handling for root folder
         if not folder_path:  # Empty string means root folder
-            print(f"Exploring root folder for user {user_id}")
             # Get all files for this user
             stmt = select(FileModel).where(FileModel.user_id == user_id)
             result = await session.execute(stmt)
@@ -205,11 +200,7 @@ class StorageService:
             # Sort files by name
             root_files = sorted(root_files, key=lambda x: x['name'].lower())
             
-            print(f"Found {len(folder_list)} folders and {len(root_files)} files at root level")
             return folder_list + root_files
-        
-        # For non-root folders, first check if the exact folder exists
-        print(f"Exploring folder {folder_path} for user {user_id}")
         
         # Check if this folder exists by looking for ANY files in this folder
         # Use first() instead of scalar_one_or_none() to avoid multiple results error
@@ -271,7 +262,6 @@ class StorageService:
 
         result = await session.execute(stmt)
         all_items = result.scalars().all()
-        print(f"Found {len(all_items)} items in/under folder {folder_path}")
 
         files = []
         folders = set()
@@ -304,7 +294,6 @@ class StorageService:
         } for folder in sorted(folders)]
 
         files = sorted(files, key=lambda x: x['name'].lower())
-        print(f"Returning {len(folder_list)} folders and {len(files)} files for {folder_path}")
         return folder_list + files
 
     async def delete_folder(self, folder_path: str, user_id: UUID, session: AsyncSession):
@@ -325,7 +314,6 @@ class StorageService:
             if not files:
                 raise HTTPException(status_code=404, detail="Folder not found or empty")
 
-            print(f"Found {len(files)} files to delete in folder {folder_path}")
             
             # Delete all files one by one
             deleted_count = 0
@@ -344,7 +332,6 @@ class StorageService:
             # Commit after all deletions
             try:
                 await session.commit()
-                print(f"Successfully deleted {deleted_count} files from folder {folder_path}")
             except Exception as e:
                 logging.error(f"Failed to commit deletion transaction: {str(e)}")
                 await session.rollback()

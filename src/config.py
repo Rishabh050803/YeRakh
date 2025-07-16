@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     SMTP_PORT : int
     SMTP_SERVER : str
 
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10  # Default token expiration time in minutes
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 3  # Default token expiration time in minutes
     # Application URL for email links
     APP_URL: str = "http://127.0.0.1:8000/auth"
 

@@ -20,13 +20,19 @@ async def get_current_user(
     if result["status"] == "expired":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token has expired. Please log in again.",
+            detail={
+            "code": "token_expired",
+            "message": "Access token has expired"
+        },
             headers={"WWW-Authenticate": "Bearer"},
         )
     elif result["status"] != "valid":
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authentication credentials",
+            detail={
+            "code": "token_invalid",
+            "message": "Invalid authentication credentials"
+        },
             headers={"WWW-Authenticate": "Bearer"},
         )
     

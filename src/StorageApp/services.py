@@ -48,7 +48,10 @@ class StorageService:
     async def get_file_response(self, file_uuid: UUID, user_id: UUID, session: AsyncSession,preview = True):
         """Return a FileResponse from disk for a given file UUID."""
         file = await self.get_file(file_uuid, user_id, session)
+
+        print("file name on disk:", f"{user_id}_{file.uuid}_{file.name}")
         if not file or not DiskManager.file_exists(f"{user_id}_{file.uuid}_{file.name}"):
+            print("file not found or does not exist on disk",file)
             return None
         
         # Use the storage-safe filename (prefixed with user_id and uuid)

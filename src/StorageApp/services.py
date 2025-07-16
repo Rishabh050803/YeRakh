@@ -45,17 +45,27 @@ class StorageService:
         result = await session.execute(statement)
         return result.scalar_one_or_none()
 
-    async def get_file_response(self, file_uuid: UUID, user_id: UUID, session: AsyncSession,preview = True):
+    async def get_file_response(self, file_uuid: UUID, user_id: UUID, session: AsyncSession, preview = True):
         """Return a FileResponse from disk for a given file UUID."""
         file = await self.get_file(file_uuid, user_id, session)
-
-        print("file name on disk:", f"{user_id}_{file.uuid}_{file.name}")
-        if not file or not DiskManager.file_exists(f"{user_id}_{file.uuid}_{file.name}"):
-            print("file not found or does not exist on disk",file)
+        
+        if not file:
+            print("File not found in database")
             return None
         
-        # Use the storage-safe filename (prefixed with user_id and uuid)
-        return DiskManager.get_file_response(f"{user_id}_{file.uuid}_{file.name}", file.name,preview)
+        # Construct filename the same way as during upload
+        storage_filename = f"{user_id}_{file.uuid}_{file.name}"
+        # IMPORTANT: Apply the same sanitization as during upload
+        sanitized_filename = self._sanitize_filename(storage_filename)
+        
+        print("Looking for file on disk:", sanitized_filename)
+        
+        if not DiskManager.file_exists(sanitized_filename):
+            print("File exists in DB but not on disk:", file.name)
+            return None
+        
+        # Use the sanitized filename to retrieve the file
+        return DiskManager.get_file_response(sanitized_filename, file.name, preview)
 
     async def upload_file(self, file: UploadFile, folder_path: str, user_id: UUID, session: AsyncSession):
         """Upload file to disk and store metadata in DB with folder path."""
@@ -155,9 +165,10 @@ class StorageService:
         if not file:
             return None
 
-        # Delete from disk using the storage-safe filename
+        # Delete from disk using the sanitized storage filename
         storage_filename = f"{user_id}_{file.uuid}_{file.name}"
-        DiskManager.delete_file(storage_filename)
+        sanitized_filename = self._sanitize_filename(storage_filename)
+        DiskManager.delete_file(sanitized_filename)
 
         # Delete from DB
         await session.delete(file)
@@ -324,7 +335,8 @@ class StorageService:
                 try:
                     # Delete from disk first
                     storage_filename = f"{user_id}_{file.uuid}_{file.name}"
-                    DiskManager.delete_file(storage_filename)
+                    sanitized_filename = self._sanitize_filename(storage_filename)
+                    DiskManager.delete_file(sanitized_filename)
                     
                     # Then delete from DB
                     await session.delete(file)

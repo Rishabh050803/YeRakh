@@ -31,3 +31,5 @@ class FileUploadSchema(BaseModel):
                 "parent_folder": "/storage"
             }
         }
+
+

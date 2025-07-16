@@ -2,33 +2,19 @@ from fastapi import APIRouter, Depends, HTTPException, status, Body, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlmodel.ext.asyncio.session import AsyncSession
 from .services import UserService
-from .schemas import UserCreateModel_By_Password, UserCreateModel_By_OAuth
+from .schemas import *
 from DB.main import get_session
 from pydantic import BaseModel, EmailStr
 from .utils import *
 from datetime import datetime
-from .models import VerificationToken
+from .models import VerificationToken, User
 from sqlmodel import select
+from .dependencies import get_current_user
+
 
 auth_router = APIRouter()
 user_service = UserService()
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-    user: dict
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
-
-class GoogleAuthRequest(BaseModel):
-    id_token: str
-
-class TokenRefreshResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
 
 @auth_router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(
@@ -292,3 +278,34 @@ async def verify_email(
     """
     user = await user_service.verify_email(token, session)
     return {"message": "Email verified successfully"}
+
+@auth_router.get("/me", response_model=UserResponse)
+async def get_current_user_profile(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get the currently authenticated user's profile.
+    
+    This endpoint is essential for maintaining user sessions across page refreshes.
+    It verifies the token is valid and returns current user data in a single request.
+    
+    Authorization:
+        Requires a valid JWT access token.
+    
+    Returns:
+        UserResponse: The user's profile information.
+    
+    Raises:
+        HTTPException (401): If the access token is invalid or expired
+    
+    Example:
+        GET /auth/me
+    """
+    return {
+        "uid": str(current_user.uid),
+        "email": current_user.email,
+        "first_name": current_user.first_name,
+        "last_name": current_user.last_name,
+        "is_verified": current_user.is_verified,
+        "created_at": current_user.created_at
+    }

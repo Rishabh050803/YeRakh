@@ -2,8 +2,6 @@ import os,datetime,logging,time,mimetypes
 from google.cloud import storage
 from storage.GCSClient import GCSClient
 
-STORAGE_DIR = os.getenv("STORAGE_DIR", "storage")
-
 class DiskManager:
         
     @staticmethod

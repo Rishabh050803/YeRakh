@@ -1,4 +1,3 @@
-version: '3.9'
 
 services:
   api:
@@ -8,7 +7,7 @@ services:
     depends_on:
       - db
     environment:
-      - DATABASE_URL=postgresql+asyncpg://rishabh:${DB_PASSWORD}@db:5432/cloud_vault
+      - DATABASE_URL=postgresql+asyncpg://rishabh:${DATABASE_PASSWORD}@db:5432/cloud_vault
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - STORAGE_DIR=/app/storage/Files/
@@ -22,7 +21,7 @@ services:
     image: postgres:16
     environment:
       - POSTGRES_USER=rishabh
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD}
       - POSTGRES_DB=cloud_vault
     volumes:
       - postgres_data:/var/lib/postgresql/data

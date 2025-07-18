@@ -21,3 +21,10 @@ class FileModel(SQLModel, table=True):
         nullable=False,
         default=datetime.now
     ))
+    confirmation: bool = Field(
+        sa_column=Column(
+            pg.BOOLEAN,
+            nullable=False,
+            default=False
+        )
+    )

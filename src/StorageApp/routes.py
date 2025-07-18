@@ -8,14 +8,81 @@ from .services import *
 from DB.main import get_session
 from src.Auth.dependencies import get_current_user
 from src.Auth.models import User
+from google.cloud import storage
 
 storage_router = APIRouter()    
 service = StorageService()
 
 @storage_router.get("/health", status_code=status.HTTP_200_OK)
 async def health_check():
-    """Health check endpoint to verify if the service is running."""
+    """
+    Health check endpoint to verify if the service is running.
+    
+    Implementation Details:
+    - Simple health probe that returns static JSON response
+    - Used by load balancers and monitoring systems to check API availability
+    - Does NOT check database or GCS connectivity (see /storage-status for that)
+    - Fast response time (<10ms) for minimal overhead
+    
+    Response Structure:
+    - JSON object with "status": "ok"
+    - HTTP 200 OK status code
+    
+    Usage Context:
+    - Called frequently by infrastructure
+    - Should never fail unless service is completely down
+    """
     return JSONResponse(content={"status": "ok"}, status_code=status.HTTP_200_OK)
+
+@storage_router.get("/storage-status")
+async def check_storage_status():
+    """
+    Check if GCS storage service is accessible and properly configured.
+    
+    Implementation Details:
+    - Tests actual connection to configured GCS bucket
+    - Uses DiskManager.check_gcs_connection() which lists a single blob
+    - Verifies credentials, permissions, and network connectivity
+    - NOT cached - performs real-time check on each call
+    
+    Response Structure:
+    - Success: {"status": "ok", "provider": "Google Cloud Storage"}
+    - Failure: {"status": "error", "message": "<error details>"}
+    
+    Error Handling:
+    - Catches all exceptions from GCS client
+    - Returns friendly error message instead of failing with 500
+    - Common errors include invalid credentials, network issues, or missing bucket
+    
+    Usage Context:
+    - Call during app initialization to verify storage setup
+    - Useful for diagnosing storage connectivity issues
+    - Consider periodic checks from monitoring systems
+    """
+    try:
+        DiskManager.check_gcs_connection(os.getenv("GCS_BUCKET_NAME"))
+        return {"status": "ok", "provider": "Google Cloud Storage"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@storage_router.get("/supported_content_types", status_code=status.HTTP_200_OK)
+async def get_supported_content_types():
+    """
+    Retrieve the list of supported content types for file uploads.
+    
+    This endpoint returns a JSON array of MIME types that are allowed for file uploads.
+    
+    Returns:
+        JSONResponse: A 200 OK response with an array of supported content types.
+    
+    Example:
+        GET /storage/supported_content_types
+    """
+    content_types = [
+        "image/jpeg", "image/png", "application/pdf",
+        "text/plain", "application/msword","application/octet-stream",]
+    
+    return JSONResponse(content=content_types, status_code=status.HTTP_200_OK)
 
 @storage_router.get("/list_files", status_code=status.HTTP_200_OK)
 async def list_files(
@@ -23,24 +90,41 @@ async def list_files(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    List all files in the storage for the authenticated user.
+    List all confirmed files owned by the authenticated user.
     
-    This endpoint retrieves all files owned by the current user, regardless of folder structure.
-    Files are sorted by creation date (newest first).
+    Implementation Details:
+    - Retrieves only confirmed files (confirmation=True)
+    - Sorts by created_at timestamp in descending order (newest first)
+    - Returns files from all folders in a flat structure
+    - All fields are serialized to JSON-compatible formats
+    - UUID converted to string for JSON compatibility
+    - Timestamps converted to ISO-8601 format
     
-    Authorization:
-        Requires a valid JWT access token.
+    Database Flow:
+    1. Query FileModel for all files with user_id matching current user
+    2. Order by created_at DESC
+    3. Convert each model to dictionary with serialized values
     
-    Returns:
-        JSONResponse: A 200 OK response with an array of file objects containing:
-            - uuid: Unique identifier for the file
-            - name: Original filename
-            - folder_path: Virtual folder path where the file is stored
-            - size: File size in bytes
-            - created_at: ISO-formatted creation timestamp
+    Response Structure:
+    - Array of file objects containing:
+      - uuid: String representation of file's unique identifier
+      - name: Original filename as uploaded
+      - folder_path: Virtual folder path where file is stored
+      - size: File size in bytes
+      - created_at: ISO-8601 formatted creation timestamp
     
-    Example:
-        GET /storage/list_files
+    Empty State:
+    - Returns empty array ([]) if user has no files
+    - Still returns 200 OK status code, not 404
+    
+    Performance Considerations:
+    - No pagination implemented - may be slow for users with many files
+    - Consider adding pagination parameters (limit/offset or cursor)
+    - No GCS calls - purely database operation
+    
+    Usage Context:
+    - Called when displaying file listings in UI
+    - Full refresh of file list should be infrequent
     """
      
     files = await service.list_files(current_user.uid, session)
@@ -67,32 +151,48 @@ async def get_file(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Retrieve a specific file by its UUID.
+    Generate a time-limited signed URL to access a file in GCS.
     
-    This endpoint allows downloading or previewing a file from the user's storage.
+    Implementation Details:
+    - Does NOT serve file content directly through API
+    - Returns a signed GCS URL valid for 5 minutes
+    - User accesses file directly from GCS via redirect or client-side fetch
+    - Preserves original filename in Content-Disposition header
+    - Content-Type set based on file extension or defaults to octet-stream
+    - Uses retry logic with exponential backoff for GCS URL generation
     
-    Path Parameters:
-        file_uuid (UUID): The unique identifier of the file to retrieve.
+    Flow:
+    1. Verify file exists and belongs to user
+    2. Construct GCS blob path using consistent pattern
+    3. Generate signed URL with appropriate headers
+    4. Return URL to client (not the file content)
     
-    Query Parameters:
-        preview (bool, optional): If True, attempts to display the file in the browser.
-                                  If False, forces download. Default is False.
+    GCS Integration:
+    - Uses DiskManager.generate_signed_url_with_retry for resilience
+    - URL includes content-disposition header for proper filename
+    - Content-type determined from file extension
     
-    Authorization:
-        Requires a valid JWT access token.
-        User can only access their own files.
+    URL Parameters:
+    - preview: Boolean flag controlling content-disposition
+      - True: inline (browser renders if possible)
+      - False: attachment (forces download)
     
-    Returns:
-        FileResponse: The file with appropriate content-type and disposition headers.
+    Response Structure:
+    - String containing the signed GCS URL
     
-    Raises:
-        HTTPException (404): If the file doesn't exist or doesn't belong to the user.
+    Security Considerations:
+    - URLs expire after 5 minutes
+    - URL is scoped to specific file (can't access other files)
+    - User authorization verified before URL generation
     
-    Example:
-        GET /storage/get_file/3d8fbb26-73d3-4898-93cf-385f4ec59210
-        GET /storage/get_file/3d8fbb26-73d3-4898-93cf-385f4ec59210?preview=true
+    Error States:
+    - 404: File not found or doesn't belong to user
+    - 500: GCS URL generation failure after retries
+    
+    Usage Context:
+    - Called when user wants to download or preview a file
+    - Client should handle redirecting to the URL or embedding it (for preview)
     """
-
     response = await service.get_file_response(file_uuid, current_user.uid, session, preview)
     if response is None:
         raise HTTPException(status_code=404, detail="File not found")
@@ -100,47 +200,59 @@ async def get_file(
 
 @storage_router.post("/upload_file", status_code=status.HTTP_201_CREATED)
 async def upload_file(
-    file: UploadFile = File(...),
-    folder_path: str = Form(""),  # Default to root folder if not provided
+    file_name: str = Form(...),
+    folder_path: str = Form(""),
+    file_size: int = Form(100 * 1024 * 1024),
+    content_type: str = Form("application/octet-stream"),
+    client_origin: str = Form(None),  # Add this parameter to accept the client origin
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Upload a file to the user's storage with an optional folder path.
+    Stage 1 of two-phase upload process: prepare metadata and generate signed upload URL.
     
-    This endpoint handles file uploads, storage quota validation, and metadata recording.
+    Implementation Details:
+    - Now supports both direct and resumable uploads to handle CORS issues
+    - Client can specify its origin to be included in the GCS request
+    - Creates database record BEFORE actual file upload (confirmed=False)
+    - Returns a signed URL with PUT permissions for direct client→GCS upload
+    - URL expires after 5 minutes for security
+    - Storage quota is verified before allowing upload
+    - Virtual folder structure maintained via folder_path parameter
     
-    Form Data:
-        file (UploadFile): The file to upload.
-        folder_path (str, optional): Virtual folder path to store the file. 
-                                     Defaults to root folder ("").
+    Database Flow:
+    1. Check if file with same name exists in same folder (409 if exists)
+    2. Check if upload would exceed user's 400MB quota (413 if exceeded)
+    3. Create FileModel with confirmation=False
+    4. Commit to database to get UUID for the file
     
-    Authorization:
-        Requires a valid JWT access token.
+    GCS Integration:
+    - Blob name format: "{user_id}/{sanitized_user_id}_{file_uuid}_{file_name}"
+    - Sanitizes filenames to prevent path traversal and invalid characters
+    - Content type auto-detected or defaults to "application/octet-stream"
     
-    Returns:
-        JSON: A 201 Created response with details of the uploaded file:
-            - uuid: Unique identifier for the file
-            - name: Original filename
-            - folder_path: Virtual folder path where the file is stored
-            - size: File size in bytes
-            - created_at: ISO-formatted creation timestamp
-            - storage_usage: Object containing storage metrics:
-                - used_mb: Current storage usage in MB
-                - total_mb: Total storage quota in MB
-                - percentage: Percentage of quota used
+    Response Structure:
+    - file_id: UUID of the created file record
+    - upload_url: Signed GCS URL for PUT operation
+    - storage_usage: Object with usage metrics (MB and percentage)
     
-    Raises:
-        HTTPException (400): If the filename is missing
-        HTTPException (413): If the upload would exceed the user's storage quota
-        HTTPException (409): If a file with the same name already exists in that folder
+    Security Considerations:
+    - Signed URLs prevent unauthorized uploads
+    - File size parameter helps prevent quota abuse
+    - Requires confirmation step to prevent storage of failed uploads
     
-    Example:
-        POST /storage/upload_file
-        (with multipart form data containing file and optional folder_path)
+    Required Follow-up:
+    - Client must call /confirm_upload/{file_uuid} after successful upload
+    - Unconfirmed uploads cleaned up after 24 hours by background task
+    
+    Error States:
+    - 400: Missing filename
+    - 409: File with same name exists in folder
+    - 413: Upload would exceed storage quota
+    - 500: Database error or GCS configuration issue
     """
-
-    if not file.filename:
+    print("Client Origin:", client_origin)
+    if not file_name:
         raise HTTPException(status_code=400, detail="Filename is required")
 
     # Get user's current storage usage
@@ -148,22 +260,72 @@ async def upload_file(
     current_usage_mb = current_usage / (1024 * 1024)
     
     # Move all logic to the service
-    new_file = await service.upload_file(file, folder_path, current_user.uid, session)
+    upload_details = await service.upload_file(
+        file_name=file_name,
+        folder_path=folder_path,
+        file_size=file_size,
+        user_id=current_user.uid,
+        session=session,
+        content_type=content_type,
+        client_origin=client_origin  # Pass through the client origin
+    )
 
     # Calculate new storage usage
     new_usage = await service.get_user_storage_usage(current_user.uid, session)
     new_usage_mb = new_usage / (1024 * 1024)
-
-    return {
-        "uuid": str(new_file.uuid),
-        "name": new_file.name,
-        "folder_path": new_file.folder_path,
-        "size": new_file.size,
-        "created_at": new_file.created_at.isoformat(),
-        "storage_usage": {
+    upload_details["storage_usage"] =  {
             "used_mb": round(new_usage_mb, 2),
             "total_mb": 400,
             "percentage": round((new_usage_mb / 400) * 100, 2)
+        }
+
+    print("Provided upload details:", upload_details)
+    return upload_details
+
+
+@storage_router.get("/confirm_upload/{file_uuid}", status_code=status.HTTP_200_OK)
+async def confirm_upload(
+    file_uuid: UUID,
+    current_user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session)
+):
+    """Stage 2 of two-phase upload process: confirm successful GCS upload."""
+    # Get the file first to check if it's a placeholder
+    file = await service.get_file(file_uuid, current_user.uid, session)
+    
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    # If it's already a placeholder, it's already confirmed
+    if file.name == ".folder_placeholder":
+        # Get updated storage usage
+        current_usage = await service.get_user_storage_usage(current_user.uid, session)
+        current_usage_mb = current_usage / (1024 * 1024)
+        
+        return {
+            "message": "Placeholder file already confirmed",
+            "storage_usage": {
+                "used_mb": round(current_usage_mb, 2),
+                "total_mb": 400,
+                "percentage": round((current_usage_mb / 400) * 100, 2)
+            }
+        }
+    
+    # Normal confirmation for regular files
+    upload_status = await service.confirm_file_upload(file_uuid, current_user.uid, session)
+    if not upload_status:
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    # Get updated storage usage
+    current_usage = await service.get_user_storage_usage(current_user.uid, session)
+    current_usage_mb = current_usage / (1024 * 1024)
+    
+    return {
+        "message": "File confirmed successfully",
+        "storage_usage": {
+            "used_mb": round(current_usage_mb, 2),
+            "total_mb": 400,
+            "percentage": round((current_usage_mb / 400) * 100, 2)
         }
     }
 
@@ -174,48 +336,66 @@ async def delete_file(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Delete a specific file by its UUID.
+    Delete a specific file from both GCS storage and database.
     
-    This endpoint removes a file from both storage and database records.
+    Implementation Details:
+    - Transactional approach: delete from GCS first, then database
+    - Preserves database integrity if GCS deletion fails
+    - If GCS deletion fails, database record is preserved (logged error)
+    - Uses retry logic with exponential backoff for GCS deletion
     
-    Path Parameters:
-        file_uuid (UUID): The unique identifier of the file to delete.
+    Delete Flow:
+    1. Verify file exists and belongs to user
+    2. Generate GCS blob path
+    3. Delete from GCS (with retries)
+    4. If GCS delete succeeds, delete database record
+    5. Return success with updated storage usage
     
-    Authorization:
-        Requires a valid JWT access token.
-        User can only delete their own files.
+    Transaction Management:
+    - GCS delete attempted first to prevent orphaned blobs
+    - Database transaction only committed if GCS delete succeeds
+    - Rollback occurs if any step fails
     
-    Returns:
-        JSON: A 200 OK response with a success message and updated storage usage:
-            - message: Confirmation message
-            - storage_usage: Object containing storage metrics:
-                - used_mb: Current storage usage in MB
-                - total_mb: Total storage quota in MB
-                - percentage: Percentage of quota used
+    Response Structure:
+    - message: Success confirmation
+    - storage_usage: Updated storage metrics after deletion
     
-    Raises:
-        HTTPException (404): If the file doesn't exist or doesn't belong to the user.
+    Error States:
+    - 404: File not found or doesn't belong to user
+    - 500: Database error (GCS errors logged but return 200 if DB succeeds)
     
-    Example:
-        DELETE /storage/delete_file/3d8fbb26-73d3-4898-93cf-385f4ec59210
+    Usage Context:
+    - Called when user deletes a single file
+    - Updates storage usage immediately for UI
     """
-
-    file = await service.delete_file(file_uuid, current_user.uid, session)
-    if file is None:
-        raise HTTPException(status_code=404, detail="File not found")
+    result = await service.delete_file(file_uuid, current_user.uid, session)
     
+    if result is None:
+        raise HTTPException(status_code=404, detail="File not found")
+        
     # Get updated storage usage
     current_usage = await service.get_user_storage_usage(current_user.uid, session)
     current_usage_mb = current_usage / (1024 * 1024)
     
-    return {
-        "message": "File deleted successfully",
-        "storage_usage": {
-            "used_mb": round(current_usage_mb, 2),
-            "total_mb": 400,
-            "percentage": round((current_usage_mb / 400) * 100, 2)
+    if result:
+        return {
+            "message": "File deleted successfully",
+            "storage_usage": {
+                "used_mb": round(current_usage_mb, 2),
+                "total_mb": 400,
+                "percentage": round((current_usage_mb / 400) * 100, 2)
+            }
         }
-    }
+    else:
+        # The service.delete_file method already logs the error
+        return {
+            "message": "File deletion initiated, but GCS deletion failed. File may still exist in storage.",
+            "storage_usage": {
+                "used_mb": round(current_usage_mb, 2),
+                "total_mb": 400,
+                "percentage": round((current_usage_mb / 400) * 100, 2)
+            }
+        }
 
 @storage_router.get("/explore_folder/{folder_path:path}", status_code=status.HTTP_200_OK)
 async def explore_folder(
@@ -224,41 +404,44 @@ async def explore_folder(
     session: AsyncSession = Depends(get_session)
 ):
     """
-    Explore a virtual folder and list its files and subfolders.
+    Explore a virtual folder to list its files and immediate subfolders.
     
-    This endpoint provides a hierarchical view of the user's storage structure.
-    When exploring the root folder (empty path), it shows all top-level folders and files.
+    Implementation Details:
+    - Implements virtual folder structure (not actual GCS folders)
+    - URL decodes the folder_path parameter to handle spaces and special chars
+    - Special handling for root folder (empty path) to show top-level items
+    - Only shows immediate subfolders, not their contents (single level)
+    - For non-root folders, verifies folder exists before listing
+    - Suggests similar folders if folder doesn't exist (typo correction)
     
-    Path Parameters:
-        folder_path (str): URL-encoded path of the folder to explore.
-                           Use empty string for root folder.
+    Virtual Folder System:
+    - Folders are virtual constructs stored in file.folder_path
+    - No physical folders in GCS - just a path prefix in blob names
+    - Allows hierarchical organization without GCS folder limitations
     
-    Authorization:
-        Requires a valid JWT access token.
+    Database Queries:
+    - Root folder: Select all files, extract unique top-level folders
+    - Non-root: Select files in exact folder + immediate child folders
+    - Uses SQL LIKE patterns for efficient folder matching
     
-    Returns:
-        JSONResponse: A 200 OK response with an array of items:
-            - For folders:
-                - type: "folder"
-                - name: Folder name
-                - path: Full path to the folder
-            - For files:
-                - type: "file"
-                - name: Filename
-                - path: Full path to the file
-                - uuid: Unique identifier for the file
-                - size: File size in bytes
-                - created_at: ISO-formatted creation timestamp
-            
-            Returns an empty array if the folder exists but has no contents.
+    Response Structure:
+    - Mixed array of folder and file objects:
+      - Folders: {"type": "folder", "name": "folder-name", "path": "full/path"}
+      - Files: {"type": "file", "name": "filename", ... other file metadata}
+    - Items sorted alphabetically by name (folders then files)
+    - Empty array if folder exists but has no contents
     
-    Raises:
-        HTTPException (404): If the folder doesn't exist. May include suggestions for similar folders.
+    Error Handling:
+    - If folder doesn't exist: 404 with suggestions for similar folders
+    - URL decoding handles spaces and special characters in paths
     
-    Example:
-        GET /storage/explore_folder/
-        GET /storage/explore_folder/images
-        GET /storage/explore_folder/documents/reports
+    Edge Cases:
+    - Trailing slashes in paths are normalized
+    - Case-sensitive folder matching (consider adding case-insensitive option)
+    
+    Usage Context:
+    - Called when browsing folders in UI
+    - Enables tree-like navigation of virtual folder structure
     """
     # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
     folder_path = urllib.parse.unquote(folder_path).rstrip("/")
@@ -280,31 +463,43 @@ async def delete_folder(
     """
     Delete a virtual folder and all its contents recursively.
     
-    This endpoint removes all files within a folder and its subfolders.
-    It deletes both the database records and the physical files.
+    Implementation Details:
+    - Recursive deletion of all files in folder and subfolders
+    - URL decodes the folder_path parameter to handle spaces and special chars
+    - Transactional approach with GCS-first deletion
+    - Could use batch operations for multiple files (currently sequential)
+    - Continues partial deletion if some files fail (best-effort approach)
     
-    Path Parameters:
-        folder_path (str): URL-encoded path of the folder to delete.
+    Delete Flow:
+    1. Find all files in folder and subfolders (SQL LIKE pattern)
+    2. For each file:
+       a. Generate GCS blob path
+       b. Delete from GCS (with retries)
+       c. If GCS delete succeeds, mark for DB deletion
+    3. Commit database transaction to remove all successful deletions
+    4. Return count of deleted files
     
-    Authorization:
-        Requires a valid JWT access token.
-        User can only delete their own folders.
+    Transaction Management:
+    - Single database transaction for all deletions
+    - Each file verified individually with GCS before DB removal
+    - Partial success possible (some files deleted, others remain)
     
-    Returns:
-        JSON: A 200 OK response with a success message and updated storage usage:
-            - message: Confirmation message with details on deleted items
-            - storage_usage: Object containing storage metrics:
-                - used_mb: Current storage usage in MB
-                - total_mb: Total storage quota in MB
-                - percentage: Percentage of quota used
+    Response Structure:
+    - message: Success with count of deleted files
+    - storage_usage: Updated storage metrics after deletion
     
-    Raises:
-        HTTPException (404): If the folder doesn't exist or is empty.
-        HTTPException (500): If there's an error during the deletion process.
+    Error States:
+    - 404: Folder not found or empty
+    - 500: Database transaction error or critical failure
     
-    Example:
-        DELETE /storage/delete_folder/images
-        DELETE /storage/delete_folder/documents/reports
+    Performance Considerations:
+    - For large folders, could be slow (sequential GCS operations)
+    - Future improvement: Use GCS batch operations
+    - No limit on number of files deleted in one operation
+    
+    Usage Context:
+    - Called when user deletes an entire folder
+    - High-impact operation that could delete many files
     """
     # Decode URL-encoded paths (e.g., "my%20pics" -> "my pics")
     folder_path = urllib.parse.unquote(folder_path).rstrip("/")
@@ -357,3 +552,17 @@ async def get_storage_usage(
             "percentage": round((current_usage_mb / 400) * 100, 2)
         }
     }
+
+@staticmethod
+def check_gcs_connection(bucket_name: str) -> bool:
+    """Verify connection to GCS bucket."""
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        # Just check if we can list a single blob
+        next(bucket.list_blobs(max_results=1), None)
+        return True
+    except Exception as e:
+        logging.error(f"GCS connection check failed: {str(e)}")
+        raise
+

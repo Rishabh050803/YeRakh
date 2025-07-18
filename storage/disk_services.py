@@ -16,29 +16,37 @@ class DiskManager:
             version="v4",
             expiration=datetime.timedelta(minutes=expiration_minutes),
             method="GET",
-            response_disposition=f'attachment; filename="{os.path.basename(blob_name)}"',
+            # response_disposition=f'attachment; filename="{os.path.basename(blob_name)}"',
             response_type=mimetypes.guess_type(blob_name)[0] or "application/octet-stream",
+            
         )
 
         return url
 
     @staticmethod
-    def generate_signed_upload_url(bucket_name:str, blob_name:str, expiration:int=5, content_type:str=None):
+    def generate_signed_upload_url(bucket_name:str, blob_name:str, expiration:int=5, content_type:str=None, origin:str=None):
         if content_type is None:
             # Guess based on filename
             content_type = mimetypes.guess_type(blob_name)[0] or "application/octet-stream"
         
-        storage_client = storage.Client()
+        storage_client = GCSClient.get_client()  # Use singleton consistently
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(blob_name)
-
+        
+        # Create headers with content type
+        headers = {"Content-Type": content_type}
+        if origin:
+            headers['Origin'] = origin
+        
         url = blob.generate_signed_url(
             version="v4",
             expiration=datetime.timedelta(minutes=expiration),
             method="PUT",
-            content_type=content_type
+            content_type=content_type,
+            headers=headers  # Include headers in signature calculation
         )
 
+        print(f"Generated URL with content type: {content_type}")
         return url
     
     @staticmethod
@@ -116,5 +124,35 @@ class DiskManager:
         except Exception as e:
             logging.error(f"Failed to generate signed URL after {max_retries} attempts: {e}")
             raise
+    
+    @staticmethod
+    def generate_resumable_upload_url(bucket_name: str, blob_name: str, expiration: int = 5, content_type: str = None,origin:str = None):
+        """Generate a signed URL specifically for resumable uploads to GCS."""
+        if content_type is None:
+            # Guess based on filename
+            content_type = mimetypes.guess_type(blob_name)[0] or "application/octet-stream"
+        
+        storage_client = GCSClient.get_client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+
+        headers = {"x-goog-resumable": "start"}
+        if origin:
+            headers['Origin'] = origin
+
+            
+        # For resumable uploads, we need to use POST method with x-goog-resumable=start
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=expiration),
+            method="POST",  # POST instead of PUT for initiating resumable uploads
+            content_type=content_type,
+            query_parameters={"uploadType": "resumable"},  # Specify resumable upload
+            headers={
+                "x-goog-resumable": "start"  # Required for resumable uploads
+            }
+        )
+        
+        return url
 
 

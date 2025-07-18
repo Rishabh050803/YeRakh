@@ -201,9 +201,10 @@ async def get_file(
 @storage_router.post("/upload_file", status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file_name: str = Form(...),
-    folder_path: str = Form(""),  # Default to root folder if not provided
+    folder_path: str = Form(""),
     file_size: int = Form(100 * 1024 * 1024),
-    content_type:str = Form("application/octet-stream"),
+    content_type: str = Form("application/octet-stream"),
+    client_origin: str = Form(None),  # Add this parameter to accept the client origin
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
@@ -211,7 +212,8 @@ async def upload_file(
     Stage 1 of two-phase upload process: prepare metadata and generate signed upload URL.
     
     Implementation Details:
-    - Uses client-side direct-to-GCS upload pattern with signed URLs
+    - Now supports both direct and resumable uploads to handle CORS issues
+    - Client can specify its origin to be included in the GCS request
     - Creates database record BEFORE actual file upload (confirmed=False)
     - Returns a signed URL with PUT permissions for direct client→GCS upload
     - URL expires after 5 minutes for security
@@ -249,7 +251,7 @@ async def upload_file(
     - 413: Upload would exceed storage quota
     - 500: Database error or GCS configuration issue
     """
-
+    print("Client Origin:", client_origin)
     if not file_name:
         raise HTTPException(status_code=400, detail="Filename is required")
 
@@ -264,7 +266,8 @@ async def upload_file(
         file_size=file_size,
         user_id=current_user.uid,
         session=session,
-        content_type=content_type
+        content_type=content_type,
+        client_origin=client_origin  # Pass through the client origin
     )
 
     # Calculate new storage usage

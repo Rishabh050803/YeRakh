@@ -80,7 +80,8 @@ class StorageService:
         file_size: int,
         user_id: UUID,
         session: AsyncSession,
-        content_type: str = None,  # Fix typo and make it optional
+        content_type: str = None,
+        client_origin: str = None,  # Add parameter for client origin
     ):
         """Upload file to disk and store metadata in DB with folder path."""
         # Stream to get file size instead of loading all at once
@@ -129,15 +130,31 @@ class StorageService:
             await session.refresh(new_file)
 
             blob_name = self._get_storage_path(user_id=user_id, file_uuid=new_file.uuid,file_name=new_file.name)
-
+            bucket_name = os.getenv("GCS_BUCKET_NAME")
+            
+            # Generate both types of upload URLs
+            direct_url = DiskManager.generate_signed_upload_url(
+                bucket_name=bucket_name,
+                blob_name=blob_name,
+                expiration=5,
+                content_type=content_type,
+                origin=client_origin,  # Pass client origin for CORS headers
+            )
+            
+            # Generate resumable upload URL
+            resumable_url = DiskManager.generate_resumable_upload_url(
+                bucket_name=bucket_name,
+                blob_name=blob_name,
+                expiration=5,
+                content_type=content_type,
+                origin=client_origin,  # Pass client origin for CORS headers
+            )
+            
             return {
                 "file_id": str(new_file.uuid),
-                "upload_url": DiskManager.generate_signed_upload_url(
-                    bucket_name=os.getenv("GCS_BUCKET_NAME"),
-                    blob_name=blob_name,
-                    expiration=5,
-                    content_type=content_type,
-                ),
+                "upload_url": direct_url,  # For backward compatibility
+                "resumable_url": resumable_url,  # New resumable upload URL
+                "client_origin": client_origin,  # Echo back the client origin for frontend use
             }
 
         except Exception as e:

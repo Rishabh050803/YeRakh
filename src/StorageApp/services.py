@@ -214,6 +214,7 @@ class StorageService:
         
         if gcs_result:
             # If GCS delete succeeds, delete from DB
+            
             await session.delete(file)
             await session.commit()
             return True

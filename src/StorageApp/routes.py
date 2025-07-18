@@ -377,24 +377,16 @@ async def delete_file(
     - Called when user deletes a single file
     - Updates storage usage immediately for UI
     """
-    file = await service.get_file_by_uuid(file_uuid, current_user.uid, session)
-    if not file:
+    result = await service.delete_file(file_uuid, current_user.uid, session)
+    
+    if result is None:
         raise HTTPException(status_code=404, detail="File not found")
-
-    # Generate GCS blob path
-    blob_name = f"{current_user.uid}/{file_uuid}/{file.name}"
-
-    # Try deleting from GCS first
-    gcs_delete_success = await service.delete_file_from_gcs(blob_name)
-
-    if gcs_delete_success:
-        # If GCS delete succeeded, delete the database record
-        await service.delete_file_record(file_uuid, session)
-
-        # Get updated storage usage
-        current_usage = await service.get_user_storage_usage(current_user.uid, session)
-        current_usage_mb = current_usage / (1024 * 1024)
-
+        
+    # Get updated storage usage
+    current_usage = await service.get_user_storage_usage(current_user.uid, session)
+    current_usage_mb = current_usage / (1024 * 1024)
+    
+    if result:
         return {
             "message": "File deleted successfully",
             "storage_usage": {
@@ -404,8 +396,7 @@ async def delete_file(
             }
         }
     else:
-        # Log the error and return a success message (GCS delete is best-effort)
-        logging.error(f"Failed to delete file from GCS: {blob_name}")
+        # The service.delete_file method already logs the error
         return {
             "message": "File deletion initiated, but GCS deletion failed. File may still exist in storage.",
             "storage_usage": {

@@ -81,7 +81,7 @@ class StorageService:
         user_id: UUID,
         session: AsyncSession,
         content_type: str = None,
-        client_origin: str = None,  # Add parameter for client origin
+        client_origin: str = None,
     ):
         """Upload file to disk and store metadata in DB with folder path."""
         # Stream to get file size instead of loading all at once
@@ -121,15 +121,24 @@ class StorageService:
                 size=file_size,
                 user_id=user_id,
                 created_at=datetime.now(),
-                confirmation=False,
+                confirmation=False if file_name != ".folder_placeholder" else True, # Auto-confirm placeholders
             )
 
             session.add(new_file)
             # CRITICAL: Add this explicit commit to ensure data is saved
             await session.commit()
             await session.refresh(new_file)
-
-            blob_name = self._get_storage_path(user_id=user_id, file_uuid=new_file.uuid,file_name=new_file.name)
+            
+            # Skip GCS operations for placeholder files
+            if file_name == ".folder_placeholder":
+                return {
+                    "file_id": str(new_file.uuid),
+                    "message": "Placeholder file created (not uploaded to storage)",
+                    "is_placeholder": True
+                }
+                
+            # Normal GCS upload for regular files
+            blob_name = self._get_storage_path(user_id=user_id, file_uuid=new_file.uuid, file_name=new_file.name)
             bucket_name = os.getenv("GCS_BUCKET_NAME")
             
             # Generate both types of upload URLs
@@ -201,10 +210,16 @@ class StorageService:
         file = await self.get_file(file_uuid, user_id, session)
         if not file:
             return None
-
-        # Get GCS path
-        
-        blob_name = self._get_storage_path(user_id=user_id, file_uuid=file.uuid,file_name=file.name)
+            
+        # Skip GCS operations for placeholder files
+        if file.name == ".folder_placeholder":
+            # Only delete from database
+            await session.delete(file)
+            await session.commit()
+            return True
+            
+        # Normal deletion flow for regular files
+        blob_name = self._get_storage_path(user_id=user_id, file_uuid=file.uuid, file_name=file.name)
         
         # First try to delete from GCS
         gcs_result = DiskManager.delete_blob(
@@ -379,7 +394,6 @@ class StorageService:
             stmt = select(FileModel).where(
                 (FileModel.user_id == user_id)
                 & (
-                    # Exact folder match OR any subfolder (using LIKE)
                     (FileModel.folder_path == folder_path)
                     | (FileModel.folder_path.like(f"{folder_path}/%"))
                 )
@@ -394,7 +408,13 @@ class StorageService:
             deleted_count = 0
             for file in files:
                 try:
-                    # First delete from GCS
+                    # Skip GCS operations for placeholder files
+                    if file.name == ".folder_placeholder":
+                        await session.delete(file)
+                        deleted_count += 1
+                        continue
+                    
+                    # Normal deletion flow for regular files
                     blob_name = self._get_storage_path(user_id=user_id, file_uuid=file.uuid, file_name=file.name)
                     gcs_result = DiskManager.delete_blob(
                         bucket_name=os.getenv("GCS_BUCKET_NAME"),

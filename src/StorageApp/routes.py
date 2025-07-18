@@ -289,38 +289,29 @@ async def confirm_upload(
     current_user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session)
 ):
-    """
-    Stage 2 of two-phase upload process: confirm successful GCS upload.
+    """Stage 2 of two-phase upload process: confirm successful GCS upload."""
+    # Get the file first to check if it's a placeholder
+    file = await service.get_file(file_uuid, current_user.uid, session)
     
-    Implementation Details:
-    - Called by client AFTER successful upload to GCS via signed URL
-    - Sets confirmation=True in database to make file visible in listings
-    - No direct GCS interaction - trusts client to confirm only successful uploads
-    - Part of two-phase upload pattern to handle client-side upload failures
+    if not file:
+        raise HTTPException(status_code=404, detail="File not found")
+        
+    # If it's already a placeholder, it's already confirmed
+    if file.name == ".folder_placeholder":
+        # Get updated storage usage
+        current_usage = await service.get_user_storage_usage(current_user.uid, session)
+        current_usage_mb = current_usage / (1024 * 1024)
+        
+        return {
+            "message": "Placeholder file already confirmed",
+            "storage_usage": {
+                "used_mb": round(current_usage_mb, 2),
+                "total_mb": 400,
+                "percentage": round((current_usage_mb / 400) * 100, 2)
+            }
+        }
     
-    Database Flow:
-    1. Retrieve file record by UUID
-    2. Set confirmation=True flag
-    3. Commit change to database
-    
-    Data Integrity:
-    - Unconfirmed uploads are invisible to file listing endpoints
-    - Background job cleans up unconfirmed uploads after 24 hours
-    - Prevents database-GCS inconsistency from failed/interrupted uploads
-    
-    Response Structure:
-    - message: Confirmation message
-    - storage_usage: Updated storage metrics after confirmation
-    
-    Edge Cases:
-    - If file_uuid doesn't exist or belong to user: 404 Not Found
-    - If file already confirmed: Still returns 200 OK (idempotent operation)
-    
-    Usage Context:
-    - Must be called by client after successful PUT to signed URL
-    - Ensures database records match actual GCS state
-    """
-    
+    # Normal confirmation for regular files
     upload_status = await service.confirm_file_upload(file_uuid, current_user.uid, session)
     if not upload_status:
         raise HTTPException(status_code=404, detail="File not found")
